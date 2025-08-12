@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Хроматический тюнер для гитары</title>
+  <style>
+    :root{--bg:#071028;--card:#0b1424;--accent:#7ee787;--muted:#9fb3c8;--glass:rgba(255,255,255,0.03);font-family:Inter, Roboto, "Segoe UI", system-ui, -apple-system, Arial}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;background:linear-gradient(180deg,var(--bg),#020617);color:#e6f2ff}
+    .wrap{max-width:920px;margin:28px auto;padding:20px;border-radius:14px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:16px;border-radius:12px}
+    header{display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:20px}
+    p.lead{margin:6px 0 12px;color:var(--muted)}
+    .controls{display:flex;gap:10px;align-items:center;margin:12px 0}
+    .btn{padding:8px 12px;border-radius:10px;background:var(--glass);border:1px solid rgba(255,255,255,0.04);cursor:pointer}
+    .btn.primary{background:linear-gradient(90deg, rgba(126,231,135,0.12), rgba(126,231,135,0.05));border-color:rgba(126,231,135,0.15)}
+    .panel{display:grid;grid-template-columns:1fr 320px;gap:16px;margin-top:12px}
+    .big{display:flex;flex-direction:column;align-items:center;justify-content:center;height:240px}
+    .note{font-size:72px;font-weight:700}
+    .freq{color:var(--muted);margin-top:6px}
+    .meta{font-size:14px;color:var(--muted);margin-top:8px;text-align:center}
+    canvas{width:100%;height:140px;background:transparent}
+    .list{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
+    .chip{padding:6px 10px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03)}
+    footer{margin-top:18px;color:var(--muted);font-size:13px;text-align:center}
+    @media (max-width:880px){.panel{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <header>
+        <div>
+          <h1>Хроматический тюнер — Гитара (12 полутонов)</h1>
+          <p class="lead">Диапазон: стандартная шестиструнная гитара (E2 ~ 82 Hz — E4 ~ 329 Hz). Поддержка A4 настройки.</p>
+        </div>
+      </header>
+
+      <div class="controls">
+        <button id="startBtn" class="btn primary">Запустить микрофон</button>
+        <button id="stopBtn" class="btn" disabled>Остановить</button>
+
+        <label style="display:flex;align-items:center;gap:8px;margin-left:10px;color:var(--muted)">A4
+          <select id="a4" style="margin-left:6px;padding:6px;border-radius:6px;background:transparent;color:inherit;border:1px solid rgba(255,255,255,0.04)">
+            <option value="440">440 Hz</option>
+            <option value="432">432 Hz</option>
+          </select>
+        </label>
+
+        <label style="display:flex;align-items:center;gap:8px;margin-left:auto;color:var(--muted)">Чувствительность
+          <select id="sensitivity" style="margin-left:6px;padding:6px;border-radius:6px;background:transparent;color:inherit;border:1px solid rgba(255,255,255,0.04)">
+            <option value="0.9">Нормальная</option>
+            <option value="0.7">Высокая</option>
+            <option value="1.2">Низкая (устойчиво)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="panel">
+        <div class="card big">
+          <div id="noteDisplay" class="note">—</div>
+          <div id="freqDisplay" class="freq">— Hz</div>
+          <div id="centsDisplay" class="meta">Отклонение: — ц
+          </div>
+          <div id="stringHint" class="meta">Подсказка по струне: —</div>
+          <div class="list" id="chromaticList"></div>
+        </div>
+
+        <div class="card">
+          <canvas id="gauge" width="600" height="180"></canvas>
+          <canvas id="osc" width="600" height="120" style="margin-top:10px"></canvas>
+          <div class="meta" id="status">Статус: ожидание</div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;color:var(--muted);font-size:13px">Инструкции: Нажмите «Запустить микрофон», дайте разрешение. Играйте по одной струне. Тюнер распознаёт ноту, показывает отклонение в центах и предлагает близкую струну. Если звук вне диапазона E2–E4, вы увидите сообщение.</div>
+      <footer>Сделано — хроматический тюнер для гитары (веб)</footer>
+    </div>
+  </div>
+
+<script>
+// Chromatic guitar tuner limited to guitar range (E2..E4)
+let audioContext=null, analyser=null, source=null, raf=null;
+let bufSize=2048; let buf=new Float32Array(bufSize);
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const noteDisplay=document.getElementById('noteDisplay');
+const freqDisplay=document.getElementById('freqDisplay');
+const centsDisplay=document.getElementById('centsDisplay');
+const stringHint=document.getElementById('stringHint');
+const status=document.getElementById('status');
+const a4select=document.getElementById('a4');
+const sensSelect=document.getElementById('sensitivity');
+const chromaticList=document.getElementById('chromaticList');
+const gauge=document.getElementById('gauge'); const gctx=gauge.getContext('2d');
+const osc=document.getElementById('osc'); const octx=osc.getContext('2d');
+
+startBtn.onclick=start; stopBtn.onclick=stop;
+
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+// Standard guitar strings (note name and MIDI number)
+const STRINGS = [ {name:'E (1)', freq:329.6276, midi:64}, // high E (string 1)
+                  {name:'B (2)', freq:246.9417, midi:59},
+                  {name:'G (3)', freq:196.0, midi:55},
+                  {name:'D (4)', freq:146.8324, midi:50},
+                  {name:'A (5)', freq:110.0, midi:45},
+                  {name:'E (6)', freq:82.4069, midi:40} ];
+// Guitar useful range: from low E2 (midi 40) to high E4 (midi 64)
+const MIN_MIDI = 40, MAX_MIDI = 64;
+
+// populate chromatic list (the 12 semitones highlighted)
+function renderChromatic(){
+  chromaticList.innerHTML='';
+  for(let i=0;i<12;i++){ const el=document.createElement('div'); el.className='chip'; el.textContent=NOTE_NAMES[i]; chromaticList.appendChild(el);} }
+renderChromatic();
+
+async function start(){
+  if(audioContext) return;
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser(); analyser.fftSize = bufSize*2; // 4096
+    source = audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+    startBtn.disabled=true; stopBtn.disabled=false; status.textContent='Статус: слушаю...';
+    tick();
+  }catch(err){ alert('Ошибка доступа к микрофону: '+err.message); }
+}
+
+function stop(){
+  if(!audioContext) return;
+  if(source && source.mediaStream){ source.mediaStream.getTracks().forEach(t=>t.stop()); }
+  audioContext.close(); audioContext=null; analyser=null; source=null; cancelAnimationFrame(raf);
+  startBtn.disabled=false; stopBtn.disabled=true; status.textContent='Статус: остановлен';
+  noteDisplay.textContent='—'; freqDisplay.textContent='— Hz'; centsDisplay.textContent='Отклонение: —'; stringHint.textContent='Подсказка по струне: —'; drawGauge(null); drawOsc(null);
+}
+
+function tick(){
+  if(!analyser) return;
+  analyser.getFloatTimeDomainData(buf);
+  const rms = calcRMS(buf);
+  const sensitivity = parseFloat(sensSelect.value)||0.9;
+  if(rms < 0.002 * sensitivity){ // слишком тихо
+    status.textContent='Статус: тихо — сыграйте струну громче';
+    noteDisplay.textContent='—'; freqDisplay.textContent='— Hz'; centsDisplay.textContent='Отклонение: —'; stringHint.textContent='Подсказка по струне: —';
+    drawGauge(null); drawOsc(buf);
+    raf = requestAnimationFrame(tick); return;
+  }
+
+  const freq = autoCorrelate(buf, audioContext.sampleRate);
+  if(freq === -1){ status.textContent='Статус: не найден тон'; noteDisplay.textContent='—'; freqDisplay.textContent='— Hz'; centsDisplay.textContent='Отклонение: —'; stringHint.textContent='Подсказка по струне: —'; drawGauge(null); drawOsc(buf); raf=requestAnimationFrame(tick); return; }
+
+  // limit to guitar range
+  const a4 = parseFloat(a4select.value)||440;
+  const noteInfo = frequencyToNote(freq, a4);
+  freqDisplay.textContent = freq.toFixed(2)+' Hz';
+  // check if MIDI in guitar range
+  if(noteInfo.midi < MIN_MIDI || noteInfo.midi > MAX_MIDI){
+    status.textContent='Статус: звук вне диапазона гитары ('+Math.round(noteInfo.midi)+')';
+    noteDisplay.textContent = noteInfo.name + noteInfo.octave;
+    centsDisplay.textContent = 'Отклонение: ' + (noteInfo.cents>0?'+':'') + noteInfo.cents.toFixed(1) + ' ц';
+    stringHint.textContent = 'Подсказка: звук вне диапазона E2..E4';
+    drawGauge(noteInfo.cents); drawOsc(buf); raf=requestAnimationFrame(tick); return;
+  }
+
+  status.textContent='Статус: тон обнаружен';
+  noteDisplay.textContent = noteInfo.name + noteInfo.octave;
+  centsDisplay.textContent = 'Отклонение: ' + (noteInfo.cents>0?'+':'') + noteInfo.cents.toFixed(1) + ' ц';
+  // suggest nearest string
+  const suggestion = suggestString(noteInfo.midi);
+  stringHint.textContent = suggestion;
+  drawGauge(noteInfo.cents);
+  drawOsc(buf);
+  raf = requestAnimationFrame(tick);
+}
+
+function calcRMS(buf){ let s=0; for(let i=0;i<buf.length;i++){ s+=buf[i]*buf[i]; } return Math.sqrt(s/buf.length); }
+
+// Autocorrelation function similar to earlier versions, returns freq or -1
+function autoCorrelate(buf, sampleRate){
+  let SIZE = buf.length;
+  // copy and window
+  let rms=0; for(let i=0;i<SIZE;i++){ rms += buf[i]*buf[i]; }
+  rms = Math.sqrt(rms/SIZE);
+  if(rms<0.001) return -1;
+
+  let r1=0,r2=SIZE-1,thres=0.2;
+  for(let i=0;i<SIZE/2;i++) if(Math.abs(buf[i])<thres){ r1=i; break; }
+  for(let i=1;i<SIZE/2;i++) if(Math.abs(buf[SIZE-i])<thres){ r2=SIZE-i; break; }
+  buf = buf.slice(r1,r2);
+  SIZE = buf.length;
+  let c = new Array(SIZE).fill(0);
+  for(let i=0;i<SIZE;i++){
+    for(let j=0;j<SIZE-i;j++) c[i] += buf[j]*buf[j+i];
+  }
+  let d=0; while(c[d]>c[d+1]) d++;
+  let maxpos=-1,maxval=-1; for(let i=d;i<SIZE;i++){ if(c[i]>maxval){ maxval=c[i]; maxpos=i; } }
+  let T0 = maxpos;
+  if(!T0) return -1;
+  // parabolic refine
+  let x1=c[T0-1], x2=c[T0], x3=c[T0+1];
+  let a=(x1+x3-2*x2)/2; let b=(x3-x1)/2; if(a) T0 = T0 - b/(2*a);
+  const freq = sampleRate / T0;
+  if(freq < 50 || freq > 2000) return -1;
+  return freq;
+}
+
+// Convert frequency -> nearest note using selected A4
+function frequencyToNote(frequency, a4){
+  const noteNum = 12 * (Math.log(frequency / a4) / Math.log(2)) + 69;
+  const rounded = Math.round(noteNum);
+  const cents = (noteNum - rounded) * 100;
+  const noteIndex = (rounded + 120) % 12;
+  const octave = Math.floor(rounded/12) - 1;
+  return {name: NOTE_NAMES[noteIndex], octave: octave, midi: rounded, cents: cents};
+}
+
+function suggestString(midi){
+  // find string with smallest abs difference
+  let best=null; let bestDiff=999;
+  for(const s of STRINGS){ const d=Math.abs(s.midi - midi); if(d<bestDiff){ bestDiff=d; best=s; } }
+  if(!best) return '—';
+  // show how many semitones from open string (negative = lower)
+  const fret = midi - best.midi; const plus = fret>=0?('+'+fret):(''+fret);
+  return 'Ближайшая струна: ' + best.name + (fret===0? ' (open)':' (fret '+plus+')');
+}
+
+// Gauge drawing for cents
+function drawGauge(cents){
+  const w=gauge.width, h=gauge.height; gctx.clearRect(0,0,w,h);
+  const cx=w/2, cy=h*0.9, radius=Math.min(w/2-24,h);
+  gctx.lineWidth=12;
+  const totalAngle = Math.PI*1.2; const startAngle = Math.PI*1.0 + (Math.PI-totalAngle)/2; const endAngle = startAngle + totalAngle;
+  const segments=120;
+  for(let i=0;i<=segments;i++){
+    const t=i/segments; const angle=startAngle + t*(endAngle-startAngle);
+    const x1=cx+Math.cos(angle)*(radius-10), y1=cy+Math.sin(angle)*(radius-10);
+    const x2=cx+Math.cos(angle)*(radius+6), y2=cy+Math.sin(angle)*(radius+6);
+    const posC=Math.abs(t-0.5); let segColor='#253247';
+    if(posC<0.08) segColor='#7ee787'; else if(posC<0.2) segColor='#ffd166'; else segColor='#ff6b6b';
+    gctx.strokeStyle=segColor; gctx.beginPath(); gctx.moveTo(x1,y1); gctx.lineTo(x2,y2); gctx.stroke();
+  }
+  // needle
+  let needleAngle=(startAngle+endAngle)/2;
+  if(cents!==null && !isNaN(cents)){
+    const max=50; const clamped=Math.max(-max, Math.min(max, cents)); const ratio=(clamped+max)/(max*2);
+    needleAngle = startAngle + ratio*(endAngle-startAngle);
+  }
+  const nx=cx+Math.cos(needleAngle)*(radius-26), ny=cy+Math.sin(needleAngle)*(radius-26);
+  gctx.lineWidth=3; gctx.strokeStyle='#e6eef8'; gctx.beginPath(); gctx.moveTo(cx,cy); gctx.lineTo(nx,ny); gctx.stroke();
+  gctx.beginPath(); gctx.fillStyle='#111827'; gctx.arc(cx,cy,8,0,Math.PI*2); gctx.fill(); gctx.beginPath(); gctx.fillStyle='#e6eef8'; gctx.arc(cx,cy,4,0,Math.PI*2); gctx.fill();
+  gctx.font='16px sans-serif'; gctx.textAlign='center'; gctx.fillStyle='#cbd5e1';
+  if(cents===null||isNaN(cents)) gctx.fillText('—', cx, cy-radius+18); else gctx.fillText((cents>0?'+':'')+cents.toFixed(1)+' c', cx, cy-radius+18);
+}
+
+function drawOsc(buf){
+  const w=osc.width, h=osc.height; octx.clearRect(0,0,w,h);
+  if(!buf) return; octx.beginPath(); octx.lineWidth=1.5; octx.strokeStyle='#7ee787';
+  const step=Math.max(1, Math.floor(buf.length / w)); let x=0;
+  for(let i=0;i<buf.length; i+=step){ const v=buf[i]*0.9; const y = (1 - (v+1)/2) * h; if(i===0) octx.moveTo(x,y); else octx.lineTo(x,y); x+=1; }
+  octx.stroke();
+}
+
+// initial visuals
+drawGauge(null);
+</script>
+</body>
+</html>
